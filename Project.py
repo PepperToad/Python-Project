@@ -5,114 +5,116 @@ import pygal
 
 def build_country_code_converter(codeinfo):
     """
-    Inputs:
-      codeinfo      - A country code information dictionary
-
-    Output:
-      A dictionary whose keys are plot country codes and values
-      are world bank country codes, where the code fields in the
-      code file are specified in codeinfo.
+    Builds a dictionary mapping pygal 2-letter country codes (lowercased)
+    to 3-letter World Bank codes (uppercased).
     """
-    converter = {}
-    codefile = codeinfo['codefile']
-    separator = codeinfo['separator']
-    quote = codeinfo['quote']
-    plot_codes = codeinfo['plot_codes']
-    data_codes = codeinfo['data_codes']
-
-    with open(codefile, 'r', newline='') as csvfile:
-        reader = csv.DictReader(csvfile, delimiter=separator, quotechar=quote)
+    code_dict = {}
+    with open(codeinfo["codefile"], newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile,
+                                delimiter=codeinfo["separator"],
+                                quotechar=codeinfo["quote"])
         for row in reader:
-            plot_code = row[plot_codes]
-            data_code = row[data_codes]
-            if plot_code and data_code:
-                converter[plot_code] = data_code
-    return converter
+            plot_code = row[codeinfo["plot_codes"]].strip().lower()
+            data_code = row[codeinfo["data_codes"]].strip().upper()
+            code_dict[plot_code] = data_code
+    return code_dict
 
 
 def reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries):
     """
-    Inputs:
-      codeinfo       - A country code information dictionary
-      plot_countries - Dictionary whose keys are plot library country codes
-                       and values are the corresponding country name
-      gdp_countries  - Dictionary whose keys are country codes used in GDP data
-
-    Output:
-      A tuple containing a dictionary and a set.  The dictionary maps
-      country codes from plot_countries to country codes from
-      gdp_countries.  The set contains the country codes from
-      plot_countries that did not have a country with a corresponding
-      code in gdp_countries.
-
-      Note that all codes should be compared in a case-insensitive
-      way.  However, the returned dictionary and set should include
-      the codes with the exact same case as they have in
-      plot_countries and gdp_countries.
+    Returns a tuple:
+    - Dictionary mapping pygal plot codes to matching GDP country codes.
+    - Set of plot codes with no corresponding match in GDP data.
     """
-    matched_codes = {}
-    unmatched_codes = set()
-    code_converter = build_country_code_converter(codeinfo)
+    converter = build_country_code_converter(codeinfo)
+    matched = {}
+    unmatched = set()
 
-    for plot_code, plot_country_name in plot_countries.items():
-        # Convert plot code to uppercase for case-insensitive comparison
-        plot_code_upper = plot_code.upper()
-        if plot_code_upper in code_converter:
-            # Get the corresponding GDP code from the converter
-            gdp_code = code_converter[plot_code_upper]
-            # Convert GDP code to uppercase for case-insensitive comparison
-            gdp_code_upper = gdp_code.upper()
-            if gdp_code_upper in gdp_countries:
-                # Add the original case codes to the matched dictionary
-                matched_codes[plot_code] = gdp_code
+    for plot_code in plot_countries:
+        norm_code = plot_code.lower()  # Normalize the code to lowercase
+        if norm_code in converter:  # Check if plot code exists in converter
+            gdp_code = converter[norm_code]
+            if gdp_code in gdp_countries:  # Ensure GDP country code exists in GDP data
+                matched[plot_code] = gdp_code  # Preserve original case of plot_code
             else:
-                unmatched_codes.add(plot_code)
+                unmatched.add(plot_code)  # Add to unmatched if no corresponding GDP data
         else:
-            unmatched_codes.add(plot_code)
-    return matched_codes, unmatched_codes
+            unmatched.add(plot_code)  # Add to unmatched if no converter found for plot code
+
+    # Ensure matched dictionary is sorted and returns in the expected order
+    matched = dict(sorted(matched.items()))
+    # Sort unmatched set to match the expected output order
+    unmatched = sorted(unmatched)
+
+    return matched, unmatched
+
+
+def read_gdp_data(gdpinfo):
+    """
+    Reads GDP CSV into a dictionary mapping country codes to full data rows.
+    """
+    gdp_data = {}
+    with open(gdpinfo["gdpfile"], newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile,
+                                delimiter=gdpinfo["separator"],
+                                quotechar=gdpinfo["quote"])
+        for row in reader:
+            code = row[gdpinfo["country_code"]].strip().upper()
+            gdp_data[code] = row
+    return gdp_data
 
 
 def build_map_dict_by_code(gdpinfo, codeinfo, plot_countries, year):
     """
-    Inputs:
-      gdpinfo        - A GDP information dictionary
-      codeinfo       - A country code information dictionary
-      plot_countries - Dictionary mapping plot library country codes to country names
-      year           - String year for which to create GDP mapping
+    Creates a dictionary suitable for plotting GDP log values on a world map.
 
-    Output:
-      A tuple containing a dictionary and two sets.  The dictionary
-      maps country codes from plot_countries to the log (base 10) of
-      the GDP value for that country in the specified year.  The first
-      set contains the country codes from plot_countries that were not
-      found in the GDP data file.  The second set contains the country
-      codes from plot_countries that were found in the GDP data file, but
-      have no GDP data for the specified year.
+    Returns:
+    - Dictionary of {plot_code: log10(GDP)} for valid countries
+    - Set of plot codes not found in GDP file
+    - Set of plot codes with no GDP data for that year
     """
-    return {}, set(), set()
+    gdp_data = read_gdp_data(gdpinfo)
+    matched, unmatched = reconcile_countries_by_code(codeinfo, plot_countries, gdp_data)
+
+    result = {}
+    no_data_for_year = set()
+
+    for plot_code, gdp_code in matched.items():
+        gdp_value = gdp_data[gdp_code].get(year, '').strip()
+        try:
+            gdp = float(gdp_value)
+            if gdp > 0:
+                result[plot_code] = math.log10(gdp)
+            else:
+                no_data_for_year.add(plot_code)
+        except (ValueError, TypeError):
+            no_data_for_year.add(plot_code)
+
+    return result, unmatched, no_data_for_year
+
 
 def render_world_map(gdpinfo, codeinfo, plot_countries, year, map_file):
     """
-    Inputs:
-      gdpinfo        - A GDP information dictionary
-      codeinfo       - A country code information dictionary
-      plot_countries - Dictionary mapping plot library country codes to country names
-      year           - String year of data
-      map_file       - String that is the output map file name
-
-    Output:
-      Returns None.
-
-    Action:
-      Creates a world map plot of the GDP data in gdp_mapping and outputs
-      it to a file named by svg_filename.
+    Renders the GDP world map using pygal.
     """
-    return
+    gdp_map, no_match, no_data = build_map_dict_by_code(gdpinfo, codeinfo, plot_countries, year)
+
+    chart = pygal.maps.world.World()
+    chart.title = f'GDP by Country in {year} (Log Scale)'
+
+    chart.add('GDP (log10)', gdp_map)
+    chart.add('No match in GDP file', list(no_match))
+    chart.add('No GDP for year', list(no_data))
+
+    chart.render_to_file(map_file)
+
+    # Optional: render in browser (local testing only)
+    #chart.render_in_browser()
 
 
 def test_render_world_map():
     """
-    Test the project code for several years
+    Runs render_world_map for selected years and generates SVG maps.
     """
     gdpinfo = {
         "gdpfile": "isp_gdp.csv",
@@ -132,24 +134,82 @@ def test_render_world_map():
         "data_codes": "ISO3166-1-Alpha-3"
     }
 
-    # Get pygal country code map
-    world_map = pygal.maps.world.World()
-    pygal_countries = world_map.COUNTRIES
+    pygal_countries = pygal.maps.world.COUNTRIES
 
-    # 1960
-    render_world_map(gdpinfo, codeinfo, pygal_countries, "1960", "isp_gdp_world_code_1960.svg")
-
-    # 1980
-    render_world_map(gdpinfo, codeinfo, pygal_countries, "1980", "isp_gdp_world_code_1980.svg")
-
-    # 2000
-    render_world_map(gdpinfo, codeinfo, pygal_countries, "2000", "isp_gdp_world_code_2000.svg")
-
-    # 2010
-    render_world_map(gdpinfo, codeinfo, pygal_countries, "2010", "isp_gdp_world_code_2010.svg")
+    for yr in ["1960", "1980", "2000", "2010"]:
+        render_world_map(gdpinfo, codeinfo, pygal_countries, yr, f"isp_gdp_world_code_{yr}.svg")
 
 
-# Make sure the following call to test_render_world_map is commented
-# out when submitting to OwlTest/CourseraTest.
-
+# Comment out the following line before submitting to Coursera/OwlTest
 #test_render_world_map()
+
+''' TEST SUITE for reconcile_countries_by code() function
+Instructions:
+Copy and paste this entire page into your script somewhere below
+reconcile_countries_by_code().
+There are five examples, numbered 0 through 4. 
+If all five give the "expected" result, 
+you are ready to code build_map_dict_by_code().
+If not, it is likely that build_map_dict_by_code() will not pass,
+even if correctly coded!
+'''
+
+
+###  Example 0 plot_countries lc:UC, code _converter UC:UC
+codeinfo = {'separator': ',', 'quote': '"', 'codefile': 'code4.csv', 'data_codes': 'ISO3166-1-Alpha-3',
+            'plot_codes': 'ISO3166-1-Alpha-2'}
+plot_countries = {'no': 'Norway', 'pr': 'Puerto Rico', 'us': 'United States'}
+gdp_countries =  {'USA': {'Country Code': 'USA', 'Country Name': 'United States'}, 'NOR': {'Country Code': 'NOR', 'Country Name': 'Norway'}}
+print("Example 0\nExpected: ({'no': 'NOR', 'us': 'USA'}, {'pr'})")
+print(reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries))
+print("******************************************\n")
+
+###     Example 1 plot_countries lc:UC, code _converter UC:UC
+codeinfo = {'codefile': 'code4.csv', 'plot_codes': 'ISO3166-1-Alpha-2',
+            'data_codes': 'ISO3166-1-Alpha-3', 'quote': '"', 'separator': ','}
+plot_countries = {'pr': 'Puerto Rico', 'no': 'Norway', 'us': 'United States'}
+gdp_countries =  {'USA': {'Country Name': 'United States', 'Country Code': 'USA'},
+                  'PRI': {'Country Name': 'Puerto Rico', 'Country Code': 'PRI'},
+                  'NOR': {'Country Name': 'Norway', 'Country Code': 'NOR'}}
+print("Example 1\nExpected:   ({'pr': 'PRI', 'no': 'NOR', 'us': 'USA'}, set())")
+print(reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries))
+print("******************************************\n")
+
+##    Example 2   plot_countries UC:lc, code _converter lc:UC
+codeinfo  =  {'separator': ',', 'quote': "'", 'plot_codes': 'Cd2',
+              'data_codes': 'Cd3', 'codefile': 'code2.csv'}
+plot_countries = {'C2': 'c2', 'C5': 'c5', 'C4': 'c4', 'C3': 'c3', 'C1': 'c1'}
+gdp_countries = {'ABC': {'Country Name': 'Country1', 'Code': 'ABC', '2000': '1', '2001': '2', '2002': '3', '2003': '4', '2004': '5', '2005': '6'},
+                'GHI': {'Country Name': 'Country2', 'Code': 'GHI', '2000': '10', '2001': '11', '2002': '12', '2003': '13', '2004': '14', '2005': '15'}}
+print("Example 2\nExpected:  ({'C3': 'GHI', 'C1': 'ABC'}, {'C5', 'C2', 'C4'})")
+print(reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries))
+print("******************************************\n")
+
+
+##    Example 3 plot_countries lc:UC, code _converter UC:UC, no countries in gdp_countries
+codeinfo = {'quote': '"', 'data_codes': 'ISO3166-1-Alpha-3',
+            'plot_codes': 'ISO3166-1-Alpha-2', 'separator': ',', 'codefile': 'code4.csv'}
+plot_countries = {'jp': 'Japan', 'cn': 'China', 'ru': 'Russian Federation'}
+gdp_countries = {}
+print("Example 3\nExpected: ({}, {'jp', 'cn', 'ru'})")
+print(reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries))
+print("******************************************\n")
+
+
+##   Example 4     plot countries UC:lc, code_converter lc:MixED
+codeinfo =  {'quote': "'", 'separator': ',', 'plot_codes': 'Code4', 'codefile': 'code1.csv', 'data_codes': 'Code3'}
+plot_countries =  {'C4': 'c4', 'C3': 'c3', 'C2': 'c2', 'C1': 'c1', 'C5': 'c5'}
+gdp_countries =  {
+'qR': {'ID': 'A 5 ', 'CC': 'qR'},
+'Kl': {'ID': 'B 6', 'CC': 'Kl'},
+'WX': {'ID': 'C 7 ', 'CC': 'WX'},
+'ef': {'ID': 'D 8', 'CC': 'ef'}
+}
+print("Example 4\nExpected ({'C4': 'ef', 'C3': 'Kl', 'C2': 'qR', 'C1': 'WX'}, {'C5'})")
+print(reconcile_countries_by_code(codeinfo, plot_countries, gdp_countries))
+print("******************************************\n")
+
+
+
+
+
